@@ -25,7 +25,6 @@ const ainizeInternalPrivateKey = process.env.AINIZE_INTERNAL_PRIVATE_KEY;
 const generationEndPoint = `${endpoint}/predictions/text-generation`;
 const healthCheckEndPoint = `${endpoint}/ping`;
 
-console.log(providerURL);
 const chainId = providerURL.includes('mainnet') ? 1 : 0
 const ain = new Ain(providerURL, chainId);
 const ainAddress = Ain.utils.toChecksumAddress(ain.wallet.add(ainizeInternalPrivateKey));
@@ -100,7 +99,7 @@ app.post('/chat', async (req, res) => {
     const txHash = getTransactionHash(transactionData);
     try {
         const sigAddr = getAddress(txHash, signature);
-        if (verifySignature(transactionData, signature, sigAddr)) {
+        if (!verifySignature(transactionData, signature, sigAddr)) {
             res.status(401).json(`Invalid transaction or signature : ${JSON.stringify(req.body)}`)
             return;
         }
