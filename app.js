@@ -3,6 +3,16 @@ const fs = require('fs');
 const axios = require('axios');
 const Ain = require('@ainblockchain/ain-js').default;
 
+const {
+    getTransactionHash,
+    getAddress,
+    verifySignature
+} = require('./utils');
+
+const queue = [];
+
+require('dotenv').config()
+
 /*
 Load ENV
  */
@@ -15,12 +25,11 @@ const ainizeInternalPrivateKey = process.env.AINIZE_INTERNAL_PRIVATE_KEY;
 const generationEndPoint = `${endpoint}/predictions/text-generation`;
 const healthCheckEndPoint = `${endpoint}/ping`;
 
+console.log(providerURL);
 const chainId = providerURL.includes('mainnet') ? 1 : 0
 const ain = new Ain(providerURL, chainId);
 const ainAddress = Ain.utils.toChecksumAddress(ain.wallet.add(ainizeInternalPrivateKey));
-console.log(ainAddress)
 ain.wallet.setDefaultAccount(ainAddress);
-
 
 /*
 Load Data for AINFT ChatBot
@@ -30,22 +39,6 @@ const data = fs.readFileSync(dataFilePath, 'utf-8');
 const app = express()
 app.use(express.json());
 
-/*
-Get Metadata
- */
-app.get('/', (req, res) => {
-    res.send({
-        inferenceParameters: {
-            temperature: 0.9,
-            top_p: 0.95,
-            repetition_penalty: 0.8,
-            do_sample: true,
-            top_k: 50,
-            length: 50
-        }
-    })
-})
-
 app.get('/ping', async (req, res) => {
     const responseData = await axios.post(healthCheckEndPoint);
     if(responseData.status === 200) {
@@ -54,6 +47,25 @@ app.get('/ping', async (req, res) => {
         res.json({status: "Unhealthy"})
     }
 });
+
+setInterval(async () => {
+    try {
+        if (queue.length === 0)
+            return;
+        const {signature, transactionData, botResponse} = queue.shift();
+        const req = await ain.sendSignedTransaction(signature, transactionData);
+        console.log(`Request Log: ${JSON.stringify(req)}`);
+        const ref = transactionData.operation.ref;
+        const responseRef = ref.split('/').slice(0, -1).concat('response').join('/');
+        const res = await ain.db.ref(responseRef).setValue({
+            value: botResponse,
+            nonce: -1,
+        });
+        console.log(`Response Log: ${JSON.stringify(res)}`);
+    } catch (error) {
+        console.error(`Response Log: ${JSON.stringify(error)}`);
+    }
+}, 1000);
 
 /*
 Postprocessing for ChatBot
@@ -83,51 +95,46 @@ const chat = async (textInputs) => {
     return processingResponse(responseText);
 }
 
-const sendResponse = async (ref, message) => {
-    console.log('send', ref, message);
-    const res = await ain.db.ref(ref).setValue({
-        value: message,
-        nonce: -1,
-    })
-    console.log(res);
-    return res;
-}
-
 app.post('/chat', async (req, res) => {
-    const {text_inputs} = req.body;
-    const botResponse = await chat(text_inputs);
-    res.json({text: botResponse});
-});
-
-// Ainize Trigger
-app.post('/trigger', async (req, res) => {
-    console.log(req.body);
-    if(!('transaction' in req.body) ||
-        !('tx_body' in req.body.transaction) ||
-        !('operation' in req.body.transaction.tx_body)
-    ){
-        console.error(`Invalid transaction : ${JSON.stringify(req.body)}`);
-        res.status(400).json(`Invalid transaction : ${JSON.stringify(req.body)}`)
-        return;
-    }
-    const transaction = req.body.transaction.tx_body.operation;
-    const {type: tx_type} = transaction;
-    if (tx_type !== 'SET_VALUE') {
-        console.error(`Not supported transaction type : ${tx_type}`);
-        res.status(400).json(`Not supported transaction type : ${tx_type}`);
-        return;
-    }
+    const {signature, transactionData} = req.body;
+    const txHash = getTransactionHash(transactionData);
     try {
-        const {value, ref} = transaction;
-        const botResponse = await chat(value);
-        const responseRef = ref.split('/').slice(0, -1).concat('response').join('/');
-        const retValue = await sendResponse(responseRef, botResponse);
-        res.json(retValue);
-    } catch (error) {
-        console.error(`Failed : ${error}`);
-        res.status(500).json(`Failed : ${error}`);
+        const sigAddr = getAddress(txHash, signature);
+        if (verifySignature(transactionData, signature, sigAddr)) {
+            res.status(401).json(`Invalid transaction or signature : ${JSON.stringify(req.body)}`)
+            return;
+        }
+        if(!('operation' in transactionData)){
+            console.error(`Invalid transaction : ${JSON.stringify(transactionData)}`);
+            res.status(400).json(`Invalid transaction : ${JSON.stringify(transactionData)}`)
+            return;
+        }
+        const transaction = transactionData.operation;
+        const {type: tx_type} = transaction;
+        if (tx_type !== 'SET_VALUE') {
+            console.error(`Not supported transaction type : ${tx_type}`);
+            res.status(400).json(`Not supported transaction type : ${tx_type}`);
+            return;
+        }
+        try {
+            const {value} = transaction;
+            const botResponse = await chat(value);
+            queue.push({
+                signature,
+                transactionData,
+                botResponse
+            });
+            res.json({text: botResponse});
+        } catch (error) {
+            console.error(`Failed : ${error}`);
+            res.status(500).json(`Failed : ${error}`);
+        }
+    } catch ( error ){
+        res.status(401).json(`Invalid transaction or signature : ${error}`)
+        return;
     }
-});
+  }
+);
 
 app.listen(port, () => {
     console.log(`app listening on port ${port}`);
