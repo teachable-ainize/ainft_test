@@ -1,4 +1,5 @@
 const express = require('express');
+const cors = require('cors');
 const fs = require('fs');
 const axios = require('axios');
 const Ain = require('@ainblockchain/ain-js').default;
@@ -10,8 +11,6 @@ const {
 } = require('./utils');
 
 const queue = [];
-
-require('dotenv').config()
 
 /*
 Load ENV
@@ -35,8 +34,10 @@ Load Data for AINFT ChatBot
  */
 const data = fs.readFileSync(dataFilePath, 'utf-8');
 
-const app = express()
+const app = express();
+
 app.use(express.json());
+app.use(cors());
 
 app.get('/ping', async (req, res) => {
     const responseData = await axios.post(healthCheckEndPoint);
@@ -81,17 +82,28 @@ const processingResponse = (responseText) => {
 
 const chat = async (textInputs) => {
     const prompt = `${data}\nHuman: ${textInputs}\nAI:`
-    const responseData = await axios.post(generationEndPoint, {
-        text_inputs: prompt,
-        temperature: 0.9,
-        top_p: 0.95,
-        repetition_penalty: 0.8,
-        do_sample: true,
-        top_k: 50,
-        length: 50
-    });
-    const responseText = responseData.data[0].substr(prompt.length);
-    return processingResponse(responseText);
+    try {
+        const responseData = await axios.post(generationEndPoint, {
+            text_inputs: prompt,
+            temperature: 0.9,
+            top_p: 0.95,
+            repetition_penalty: 0.8,
+            do_sample: true,
+            top_k: 50,
+            length: 50
+        });
+        const responseText = responseData.data[0].substr(prompt.length);
+        const processedResponse = processingResponse(responseText);
+        if(processedResponse.length === 0){
+            return "Oops some error occurred. Maybe there is a problem with your prompt."
+        }
+        else {
+            return processedResponse;
+        }
+    } catch (error){
+        return "Oops some error occurred try again";
+    }
+
 }
 
 app.post('/chat', async (req, res) => {
